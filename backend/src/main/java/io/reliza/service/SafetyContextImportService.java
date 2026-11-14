@@ -237,6 +237,15 @@ SafetyContextImportResult result = createProposals(
             data.setClassificationJson(entry.safetyIntegrityLevelsJson());
             data.setMatchStatus(matchStatus);
             data.setStatus(ProposalStatus.PENDING);
+if (data.getScopeUuid() != null
+        && !proposalRepository.findDedupeCandidates(
+                org.toString(),
+                sourceArtifact.toString(),
+                data.getSourceAssertionHash(),
+                data.getScope().name(),
+                data.getScopeUuid().toString()).isEmpty()) {
+    continue;
+}
 
         TrustAction gate =
     SafetyContextTrustGate.effectiveAction(
