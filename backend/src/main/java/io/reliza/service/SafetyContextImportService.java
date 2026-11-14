@@ -36,6 +36,7 @@ import io.reliza.model.dto.SafetyContextEntry;
 import io.reliza.model.dto.SafetyContextImportResult;
 import io.reliza.model.dto.SafetyContextParseResult;
 import io.reliza.repositories.SafetyContextProposalRepository;
+import io.reliza.model.dto.MatchCandidate;
 
 /**
  * Resolves CycloneDX 2.0 component PURLs against a release's reconciled SBOM
@@ -50,13 +51,17 @@ public class SafetyContextImportService implements ArtifactImportHandler {
     private final SafetyContextParser parser;
     private final SbomComponentService sbomComponentService;
     private final SafetyContextProposalRepository proposalRepository;
+    private final ScopeTargetResolver scopeTargetResolver;
 
-    public SafetyContextImportService(SafetyContextParser parser,
-            SbomComponentService sbomComponentService,
-            SafetyContextProposalRepository proposalRepository) {
+    public SafetyContextImportService(
+        SafetyContextParser parser,
+        SbomComponentService sbomComponentService,
+        SafetyContextProposalRepository proposalRepository,
+        ScopeTargetResolver scopeTargetResolver) {
         this.parser = parser;
         this.sbomComponentService = sbomComponentService;
         this.proposalRepository = proposalRepository;
+        this.scopeTargetResolver = scopeTargetResolver;
     }
     
     @Override
@@ -86,11 +91,14 @@ public class SafetyContextImportService implements ArtifactImportHandler {
 
         verifyPreconditions(rd);
 
-        SafetyContextImportResult result = createProposals(
-                rd.getOrg(),
-                rd.getUuid(),
-                artifactUuid,
-                new String(content, StandardCharsets.UTF_8));
+    SafetyContextImportResult result = createProposals(
+        rd.getOrg(),
+        rd.getUuid(),
+        artifactUuid,
+        artDto.getImportScope() != null
+            ? artDto.getImportScope()
+            : AnalysisScope.COMPONENT,
+        new String(content, StandardCharsets.UTF_8));
 
         ImportSummary summary = new ImportSummary();
         summary.setStatementsTotal(result.total());
@@ -103,7 +111,11 @@ public class SafetyContextImportService implements ArtifactImportHandler {
     }
     @Transactional
     public SafetyContextImportResult createProposals(
-            UUID org, UUID releaseUuid, UUID sourceArtifact, String documentJson) {
+        UUID org,
+        UUID releaseUuid,
+        UUID sourceArtifact,
+        AnalysisScope importScope,
+        String documentJson) {
         SafetyContextParseResult parsed = parser.parse(documentJson);
         if (!parsed.valid()) {
             return new SafetyContextImportResult(0, 0, 0, 0, 0, 1,
@@ -171,7 +183,20 @@ public class SafetyContextImportService implements ArtifactImportHandler {
             data.setSourceAssertionHash(sha256(entry.rawAssetJson()));
             data.setSourceDocumentJson(documentJson);
             data.setSourceAssertionJson(entry.rawAssetJson());
-            data.setScope(AnalysisScope.COMPONENT);
+            List<MatchCandidate> targets =
+            scopeTargetResolver.targets(
+                org,
+                importScope,
+                Set.of(releaseUuid),
+                releaseUuid);
+
+        if (!targets.isEmpty()) {
+            MatchCandidate target = targets.get(0);
+            data.setScope(target.scope());
+            data.setScopeUuid(target.scopeUuid());
+        } else {
+            data.setScope(importScope);
+        }
             data.setSbomComponentUuid(componentUuid);
             data.setComponentPurl(entry.componentPurl());
             data.setComponentRefId(entry.componentRefId());
@@ -180,7 +205,7 @@ public class SafetyContextImportService implements ArtifactImportHandler {
             data.setClassificationJson(entry.safetyIntegrityLevelsJson());
             data.setMatchStatus(matchStatus);
             data.setStatus(ProposalStatus.PENDING);
-
+            
             SafetyContextProposal proposal = new SafetyContextProposal();
             proposal.setUuid(data.getUuid());
             proposal.setRecordData(data.toRecordData());
